@@ -1,5 +1,1 @@
-[
-  { "name": "1-start.jpg", "query": "?shot=start&seed=1" },
-  { "name": "2-play.jpg", "query": "?shot=play&seed=1" },
-  { "name": "3-end.jpg", "query": "?shot=end&seed=1" }
-]
+{"game":"Solmar Bay — A Sunset City Story","shots":{"1-cover.jpg":"Driving chase: gold Vela GT at speed, 3 wanted stars, police cruisers behind, minimap + mission objective on HUD","2-chase.jpg":"Police chase on foot/car with wanted stars and sirens, traffic around","3-mission.jpg":"Mission in progress: objective beacon + briefing dialogue + destination marker on minimap","4-city.jpg":"On foot in a busy street: pedestrians, traffic, palms and towers, HUD + minimap"}}

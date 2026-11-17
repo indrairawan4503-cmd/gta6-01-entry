@@ -1,79 +1,102 @@
-// The screenshot scenes behind ?shot=start|play|end. Each one plays the real rules forward from a
-// fresh world for a fixed number of steps, steered by a simple autopilot (look ahead each way the
-// paddle could move, keep clear of blocks, chase the lowest coin when that is safe), so the frame
-// is what a short game really looks like and the same seed always gives the same frame.
-import { FIELD, PLAYER, STEP } from './config.js';
-import { EVENT_OVER, KIND_BLOCK } from './world.js';
-import { SCREEN_OVER, SCREEN_PLAY, SCREEN_TITLE } from './render.js';
+// shots.js — staging helpers for screenshots only.
+// Exposes window.SOLMAR_DEBUG so a Playwright script can put the game
+// into real, playable states (start a mission, raise wanted level,
+// teleport, enter a car) and screenshot the live render. These helpers
+// call the game's own public functions — they never fake the HUD or
+// draw anything the game itself does not render.
 
-const START_SECONDS = 5;
-const PLAY_SECONDS = 26;
-const END_LIMIT_SECONDS = 600;
-/**
- * How far ahead, in seconds, the autopilot checks each way it could move: the play scene's pilot
- * looks well ahead and keeps all its lives; the end scene's looks only a moment ahead, so it is
- * caught out once the blocks speed up, as a hurried player is.
- */
-const HORIZON_PLAY = 0.7;
-const HORIZON_END = 0.25;
-const SAMPLE = 1 / 30;
-const DIRECTIONS = [0, -1, 1];
-/** Extra room, each side, it keeps between the paddle and a block. */
-const MARGIN = 10;
+import { updateStars } from './police.js';
 
-/** Seconds until moving in `direction` (-1, 0, 1) runs the paddle into a block; Infinity when it never does. */
-function timeToHit(state, direction, horizon) {
-  const player = state.player;
-  for (let t = SAMPLE; t <= horizon; t += SAMPLE) {
-    const x = Math.min(FIELD.width - player.width, Math.max(0, player.x + direction * PLAYER.speed * t));
-    for (let index = 0; index < state.items.length; index += 1) {
-      const item = state.items[index];
-      if (!item.active || item.kind !== KIND_BLOCK) continue;
-      const y = item.y + item.speed * t;
-      if (y + item.height > player.y && y < player.y + player.height && item.x < x + player.width + MARGIN && item.x + item.width > x - MARGIN) return t;
-    }
-  }
-  return Infinity;
-}
-
-/** Of the safe ways to move, the one toward the lowest coin (or the centre); else the one that is hit last. */
-function autopilot(state, horizon) {
-  const player = state.player;
-  let coin = null;
-  for (let index = 0; index < state.items.length; index += 1) {
-    const item = state.items[index];
-    if (item.active && item.kind !== KIND_BLOCK && (coin === null || item.y > coin.y)) coin = item;
-  }
-  const target = coin === null ? FIELD.width / 2 : coin.x + coin.width / 2;
-  const centre = player.x + player.width / 2;
-  const wanted = target > centre + 8 ? 1 : target < centre - 8 ? -1 : 0;
-  let best = wanted;
-  let bestTime = timeToHit(state, wanted, horizon);
-  for (let index = 0; index < DIRECTIONS.length && bestTime !== Infinity; index += 1) {
-    const time = timeToHit(state, DIRECTIONS[index], horizon);
-    if (time > bestTime) {
-      bestTime = time;
-      best = DIRECTIONS[index];
-    }
-  }
-  return best;
-}
-
-/**
- * Set `world` to the named scene (start, play or end; any other name is start) and return the
- * screen to draw over it and the best score to show.
- */
-export function stageShot(name, world) {
-  world.reset();
-  if (name !== 'play' && name !== 'end') {
-    for (let index = 0; index < START_SECONDS / STEP; index += 1) world.step(STEP, 0, true);
-    return { screen: SCREEN_TITLE, best: 0 };
-  }
-  const limit = name === 'end' ? END_LIMIT_SECONDS : PLAY_SECONDS;
-  const horizon = name === 'end' ? HORIZON_END : HORIZON_PLAY;
-  for (let index = 0; index < limit / STEP; index += 1) {
-    if (world.step(STEP, autopilot(world.state, horizon), false) & EVENT_OVER) break;
-  }
-  const over = world.state.lives === 0;
-  return { screen: over ? SCREEN_OVER : SCREEN_PLAY, best: world.state.score };
+export function installDebugHooks(world, fns) {
+  const debug = {
+    // current state, for the screenshot script to assert on
+    state() {
+      return {
+        gameState: world.state,
+        cash: world.cash,
+        wanted: world.police.wanted,
+        health: world.player.health,
+        inCar: !!world.playerCar,
+        carName: world.playerCar ? world.playerCar.name : null,
+        carSpeed: world.playerCar ? Math.abs(world.playerCar.speed) * 2.237 : 0,
+        mission: world.missions.activeIndex,
+        missionStep: world.missions.stepIndex,
+        x: world.playerCar ? world.playerCar.x : world.player.x,
+        z: world.playerCar ? world.playerCar.z : world.player.z,
+        policeCars: world.police.policeCars.length,
+        footCops: world.police.footCops.length,
+        traffic: world.trafficCars.length,
+        peds: world.peds.length,
+      };
+    },
+    startGame(newGame) { fns.startGame(newGame !== false); },
+    startMission(i) { fns.startMission(world, i); },
+    // raise the wanted level through the real heat system
+    setWanted(n) {
+      const heatFor = [0, 10, 28, 48, 68, 90][Math.max(0, Math.min(5, n))];
+      world.police.heat = heatFor;
+      world.police.lastCrimeAt = world.time;
+      world.police.coolTimer = 0;
+      world.police.spawnTimer = 0;
+      updateStars(world.police);
+    },
+    teleport(x, z) {
+      if (world.playerCar) {
+        world.playerCar.x = x;
+        world.playerCar.z = z;
+        world.playerCar.speed = 0;
+        world.playerCar.mesh.position.set(x, 0, z);
+      } else {
+        world.player.x = x;
+        world.player.z = z;
+        world.player.mesh.position.set(x, 0, z);
+      }
+    },
+    // drive the player into the nearest car and enter it (real path:
+    // teleport next to it, then use the game's own E handler logic)
+    enterNearestCar() {
+      let best = null;
+      let bestD = 1e9;
+      for (const car of world.allCars) {
+        if (car.isPlayer) continue;
+        const d = Math.hypot(car.x - world.player.x, car.z - world.player.z);
+        if (d < bestD) { bestD = d; best = car; }
+      }
+      if (!best) return false;
+      world.player.x = best.x + 2;
+      world.player.z = best.z;
+      world.player.mesh.position.set(world.player.x, 0, world.player.z);
+      return true;
+    },
+    // put the player in a car by name (e.g. the gold Vela GT)
+    enterCarNamed(name) {
+      const car = world.allCars.find((c) => c.name === name);
+      if (!car) return false;
+      world.player.x = car.x + 2;
+      world.player.z = car.z;
+      world.player.mesh.position.set(world.player.x, 0, world.player.z);
+      return true;
+    },
+    // snap the chase camera directly behind the current focus (player
+    // or car) so a staged shot is framed at once instead of mid-swing
+    snapCamera() {
+      const inCar = !!world.playerCar;
+      const fx = inCar ? world.playerCar.x : world.player.x;
+      const fz = inCar ? world.playerCar.z : world.player.z;
+      const heading = inCar ? world.playerCar.heading : world.player.heading;
+      world.camYaw = heading;
+      const dist = inCar ? 11.5 : 8;
+      const height = inCar ? 4.4 : 3.6;
+      world.camera.position.set(fx - Math.sin(heading) * dist, height, fz - Math.cos(heading) * dist);
+      world.camera.lookAt(fx + Math.sin(heading) * 4, 1.6, fz + Math.cos(heading) * 4);
+    },
+    // freeze the render loop (keeps the last presented frame) so a
+    // screenshot can be taken under software rendering without the
+    // compositor queue being busy; unfreeze() resumes the loop
+    freeze() { world.frozen = true; },
+    unfreeze() { world.frozen = false; },
+  };
+  window.SOLMAR_DEBUG = debug;
+  window.__solmar = world;
+  return debug;
 }
